@@ -36,24 +36,30 @@ def create_pool(loop, **kw): # 连接池里是链接, 需要的时候来直接�
 def select(sql, args, size=None):
     log(sql, args)
     global __pool
-    # yield from 将会调用一个子协程，并直接返回调用的结果 
+    # yield from 将会执行一个子协程，并直接返回调用的结果  
     # 下面的yield from从连接池中返回一个连接， 这个地方已经创建了进程池并和进程池连接了，进程池的创建被封装到了create_pool(loop, **kw)
     with (yield from __pool) as conn: # 从连接池取得一个连接 
         # 创造游标  
         cur = yield from conn.cursor(aiomysql.DictCursor) 
-        # dict cursor: A cursor which returns results as a dictionary
+        # dict cursor会得到一个了列名与字段值映射的字典
         # fetchone()从dict cursor得到下一行协程 会得到类似如下结果
         # {'age': 20, 'DOB': datetime.datetime(1990, 2, 6, 23, 4, 56), 'name': 'bob'}
-        yield from cur.execute(sql.replace('?', '%s'), args or ()) # 将SQL语句的占位符?，替换为MySQL的占位符%s
+        # fetchall与fetchman一个dict cursor会得到一个字典组成的列表
+
+        # 普通的cursor则会得到一个字段值组成的元组 
+        # fetchone()从普通cursor得到下一行协程 会得到类似如下结果
+        # ('1', 'sytu', 12345)
+        # fetchall与fetchman一个dict cursor会得到一个元组组成的列表
+
+        yield from cur.execute(sql.replace('?', '%s'), args or ()) # 将SQL语句参数的占位符?，替换为MySQL的占位符%s
         # 协程cursor.execute的第一个参数接受sql字符串, 第二个参数接受传给sql语句的作为sql参数args元组, 若不存在则传入一个空元组
     if size: # 若有向size传入一个指定返回查询行数的参数size
         rs = yield from cur.fetchmany(size)
-        # fetchmany: Coroutine the next set of rows of a query result, returning a list of tuples
+        # fetchmany: Coroutine the next set of rows of a query result
         # The number of rows to fetch per call is specified by the parameter, 这里就是size
-        # ex: fetchmany(2) => [(1, 100, "abc'def"), (2, None, 'dada')]
     else:
         rs = yield from cur.fetchall()
-        # fetchall: Coroutine returns all rows of a query result set:
+        # fetchall: Coroutine returns all rows of a query result set
     yield from cur.close()
     #关闭游标. 但不用手动关闭conn，因为是在with语句里面，会自动关闭，因为是select，所以不需要提交事务(commit)
     logging.info('rows returned: %s', % len(rs)) # log查询结果的行数
@@ -160,7 +166,7 @@ class ModelMetaclass(type):  # 由于metaclass是类的模板，所以必须从 
             # 构造默认的SELECT, INSERT, UPDATE和DELETE语句:
             # 注意, `%s` for 表名或字段名, %s也就是不加反引号for字符串, 不加单引号是因为字符串自带了单引号
             attrs['__select__'] = 'select `%s`, %s from `%s`' % (primaryKey, ', '.join(escaped_fields), tableName) 
-            # 如: select id, name, phone from users
+            # 如: select id, name, phone from users  where由调用类对象的方法提供
             attrs['__insert__'] = 'insert into `%s` (%s, `%s`) values (%s)' % (tableName, ', '.join(escaped_fields), primaryKey, create_args_string(len(escaped_fields) + 1))
             # 如: insert into users (name, phone, id) values (?, ?, ?)
             attrs['__update__'] = 'update `%s` set %s where `%s`=?' % (tableName, ', '.join(map(lambda f: '`%s`=?' % (mappings.get(f).name or f), fields)), primaryKey)
@@ -168,6 +174,7 @@ class ModelMetaclass(type):  # 由于metaclass是类的模板，所以必须从 
             attrs['__delete__'] = 'delete from `%s` where `%s`=?' % (tableName, primaryKey)
             # 如: delete from users where id=?
             return type.__new__(cls, name, bases, attrs)
+            # 这样，任何继承自Model的类（比如User），会自动通过ModelMetaclass扫描映射关系，并存储到自身的类属性如__table__、__mappings__中
 # 完成metaclass中完成上述的定义就可以在Model中定义各种数据库的操作方法, 也就是说通过对象来操作数据库所需要的基础由metaclass提供
 
 
@@ -179,7 +186,7 @@ class ModelMetaclass(type):  # 由于metaclass是类的模板，所以必须从 
 # 还定义各种操作数据库的方法，比如save，delete，find，findAll, update等等。
 # 实现数据库操作的所有方法，定义为class方法，所有继承自Model都具有数据库操作方法  
 class Model(dict, metaclass=ModelMetaclass): 
-    def __init__(self, **kw): # kw是 Object(...)中接受的参数, 是键值对组成的字典
+    def __init__(self, **kw): # kw是 obj(...)中接受的参数, 是项名和项值作为键值对组成的字典
         super(Model, self).__init__(**kw) # super(Model, self) == dict
 
     def __getattr__(self, key): # obj['id'] 或 obj.id 会被调用
@@ -203,6 +210,100 @@ class Model(dict, metaclass=ModelMetaclass):
                 logging.debug('using default value for %s: %s' % (key, str(value)))
                 setattr(self, key, value)
         return value
+
+    # 添加类方法，就可以让所有子类调用class类方法构造实例
+    # 类方法有类变量cls传入，从而可以用cls做一些相关的处理。并且有子类继承时，调用该类方法时，传入的类变量cls是子类，而非父类。  
+    @classmethod 
+    @asyncio.coroutine
+    def find(cls, pk):  
+        # 这个类方法使得User类可以通过类方法实现主键查找. 
+        # 如: user = yield from User.find('123') '123'会赋给pk
+        # 仿佛查询: select id,name,phone from users where id=123
+
+        ' find object by primary key. '
+        rs = yield from select('%s where `%s`=?' % (cls.__select__, cls.__primary_key__), [pk], 1) 
+        # select 是上面定义的一个协程用来创建游标执行传入的sql语句与其参数
+        # '%s where `%s`=?' % (cls.__select__, cls.__primary_key__) 作为sql语句赋给select的参数sql
+        # [pk]作为sql语句的参数传递给select的参数args
+        # 1 作为select的size参数
+        if len(rs) == 0: # 如果什么都没返回, 说明查询失败, find返回None
+            return None
+        return cls(**rs[0]) # 查询成功则返回一条记录，以dict的形式返回，因为cls的父类继承了dict类    
+        # rs = [{'age': 20, 'DOB': datetime.datetime(1990, 2, 6, 23, 4, 56), 'name': 'bob'},]
+        # rs[0] 得到dict, **dict 将列dict的键值对依次作为参数传入cls, 最后构造出一个字典然后被返回
+
+    @classmethod 
+    @asyncio.coroutine  
+    def find_all(cls, where=None, args=None, **kw):  # 根据WHERE条件查找；
+        sql = [cls.__select__]  
+        if where:  
+            sql.append('where')  
+            sql.append(where)  
+        if args is None:  
+            args = []  
+   
+        orderBy = kw.get('orderBy', None)  
+        if orderBy:  
+            sql.append('order by')  
+            sql.append(orderBy)  
+
+        limit = kw.get('limit', None)  
+        if limit is not None:  
+            sql.append('limit')  
+            if isinstance(limit, int):  
+                sql.append('?')  
+                args.append(limit)  
+            elif isinstance(limit, tuple) and len(limit) ==2:  
+                sql.append('?,?')  
+                args.extend(limit)  
+            else:  
+                raise ValueError('Invalid limit value : %s ' % str(limit))  
+   
+        rs = yield from select(' '.join(sql),args) #返回的rs是一个元素是tuple的list  
+        return [cls(**r) for r in rs]  # **r 是关键字参数，构成了一个cls类的列表，其实就是每一条记录对应的类实例  
+     
+    @classmethod  
+    @asyncio.coroutine  
+    def findNumber(cls, selectField, where=None, args=None): # 根据WHERE条件查找，但返回的是整数，适用于像select count(*)这样带有内置函数的SQL
+        '''''find number by select and where.'''  
+        sql = ['select %s __num__ from `%s`' %(selectField, cls.__table__)]  
+        if where:  
+            sql.append('where')  
+            sql.append(where)  
+        rs = yield from select(' '.join(sql), args, 1)  
+        if len(rs) == 0:  
+            return None  
+        return rs[0]['__num__']  
+      
+
+    # 添加实例方法，就可以让所有子类调用实例方法执行相应的数据库操作
+    @asyncio.coroutine
+    def save(self): # 向表添加一行数据
+        # 这个实例方法可以把一个User实例存入数据库
+        # 如: user = User(id=123, name='Michael'); yield from user.save()
+        # 相当于把一行插入表: insert into users (name, id) values ('Michael', 1)
+        args = list(map(self.getValueOrDefault, self.__fields__)) # map会把fields的元素(不为主键的段名)传递给getValueOrDefault
+        # args是段值(包括默认值)组成的列表, 这些段值将要作为参数插入表. 将会依次替代VALUES(?,?,?)中的?
+        args.append(self.getValueOrDefault(self.__primary_key__)) # 把主键对应的段值也添加进args列表
+        rows = yield from execute(self.__insert__, args)
+        if rows != 1: # execute执行正常的话将返回1作为被影响到(插入)的行数, 若不为1则插入失败
+            logging.warn('failed to insert record: affected rows: %s' % rows)
+
+    @asyncio.coroutine  
+        def update(self): # 修改数据库中已经存入的一行数据  
+            args = list(map(self.getValue, self.__fields__))  #获得的value是User实例的属性值(项值), args是其组成的列表 
+            args.append(self.getValue(self.__primary_key__))  
+            rows = yield from execute(self.__update__, args)  
+            if rows != 1:  
+                logging.warning('failed to update record: affected rows: %s'%rows)  
+      
+    @asyncio.coroutine  
+    def delete(self):  # 删表中的一行数据
+        args = [self.getValue(self.__primary_key__)]  # 删除一行只需要主键列对应的项值
+        rows = yield from execute(self.__delete__, args)  
+        # args会通过execute赋给delete from `%s` where `%s`=?'中的?
+        if rows != 1:  
+            logging.warning('failed to delete by primary key: affected rows: %s' %rows)  
 
 # 数据表中各项的类
 class Field(object):
