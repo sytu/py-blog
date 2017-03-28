@@ -7,7 +7,7 @@ Source code of [my personal website](http://imsytu.com)
 
 2016-03-27
 =================
-1. xxxx
+1. begin to work on this repo
 
 
 
