@@ -80,7 +80,7 @@ def execute(sql, args, autocommit=True):
 # insert into  `User` (`password`, `email`, `name`, `id`) values (?,?,?,?)
 def create_args_string(num):  
     return (','.join(['?' for i in range(num)])) 
-    # print(create_args_string(4)) # => '?,?,?,?''
+    # print(create_args_string(4)) # => '?,?,?,?'
 
 
 # ORM框架提供: 父类Model 和 属性类型StringField、IntegerField等
@@ -95,17 +95,19 @@ def create_args_string(num):
 # 1. 读取具体子类(user)的映射信息  
 # 2. 创造类的时候，排除对Model类的修改  
 # 3. 在当前类中查找所有的类属性(attrs)，如果找到Field属性，就将其保存到__mappings__的dict中，同时从类属性中删除Field(防止实例属性遮住类的同名属性)  
-# 4. 将数据库表名保存到__table__中  
+# 4. 将数据库表名保存到__table__中等
+# 5. 将数据库操作语句的基本样式保存为类属性
 
 # 基类Model的元类的定义: 
 class ModelMetaclass(type):  # 由于metaclass是类的模板，所以必须从 type类 派生
     # __new__控制__init__的执行，所以在其执行之前  
     # cls:代表要__init__的类，此参数在实例化时由Python解释器自动提供(例如下文的User和Model)  
     # bases：代表继承父类的集合  
-    # attrs：类的方法集合  
+    # attrs：类的属性集合  
     def __new__(cls, name, bases, attrs):
             if name=='Model':       # 排除掉对Model类的修改
                 return type.__new__(cls, name, bases, attrs)
+
             # 获取table名称 
             table_name=attrs.get('__table__', None) or name   #r如果存在表名，则返回表名，否则返回 name; __table__是User等Model子类的类属性表示 表名
             logging.info('found table: %s (table: %s) ' %(name,table_name ))  
@@ -130,25 +132,49 @@ class ModelMetaclass(type):  # 由于metaclass是类的模板，所以必须从 
                         primaryKey = k # 主键只能被设置一次
                     else:
                         fields.append(k) # 将不是主键的字段的名字如name, phone添加到fields列表
+
             if not primaryKey: # 如果主键不存在也将会报错，在这个表中没有找到主键，一个表只能有一个主键，而且必须有一个主键  
                 raise RuntimeError('Primary key not found.')
 
+            # 从类属性attrs中删除该Field属性:
             for k in mappings.keys():
                 attrs.pop(k)
+            # 如将User类中的username, email, id, password属性删去. 否则，容易造成运行时错误,实例的属性会遮盖类的同名属性
+            # 如果不删除这些同名属性, Model内的args.append(getattr(self, k, None)) 将
+            # 得到args.append(IntegerField('id'))
+            # args将不会由字段名k对应的字段值value组成列表, 而是由字段类型对象如IntegerField对象, StringField对象等组成列表
+            # 原因就是self有两个同名的k
 
+            # 将除主键外的其他属性变成`phone`, `name`这种形式，反引号``: mysql中sql传参数表名，字段名等要用反引号 注意: 字符串用单引号
             escaped_fields = list(map(lambda f: '`%s`' % f, fields))
-            attrs['__mappings__'] = mappings # 保存属性和列的映射关系
-            attrs['__table__'] = tableName
-            attrs['__primary_key__'] = primaryKey # 主键属性名
-            attrs['__fields__'] = fields # 除主键外的属性名
+            # >>> fields = ['name',` 'phone']
+            # >>> list(map(lambda f: '`%s`' % f, fields)) 
+            # ['`name`', '`phone`']
+            # fields中的元素会被map作为参数传递给lambda的参数f, f再被传递给%s, 生成的字符串作为元素构成一个新的列表
+
+            attrs['__mappings__'] = mappings # 为Model的子类添加一个属性, 保存属性和列的映射关系 
+            # mappings是刚才创造的项名与项值映射的字典: __mappings__ = {'username':<__main__.StringField object at 0x10a6884a8>, ....} 
+            attrs['__table__'] = tableName  # 保存表名
+            attrs['__primary_key__'] = primaryKey # 保存主键属性名
+            attrs['__fields__'] = fields # 保存除主键外的属性名
             # 构造默认的SELECT, INSERT, UPDATE和DELETE语句:
-            attrs['__select__'] = 'select `%s`, %s from `%s`' % (primaryKey, ', '.join(escaped_fields), tableName)
+            # 注意, `%s` for 表名或字段名, %s也就是不加反引号for字符串, 不加单引号是因为字符串自带了单引号
+            attrs['__select__'] = 'select `%s`, %s from `%s`' % (primaryKey, ', '.join(escaped_fields), tableName) 
+            # 如: select id, name, phone from users
             attrs['__insert__'] = 'insert into `%s` (%s, `%s`) values (%s)' % (tableName, ', '.join(escaped_fields), primaryKey, create_args_string(len(escaped_fields) + 1))
+            # 如: insert into users (name, phone, id) values (?, ?, ?)
             attrs['__update__'] = 'update `%s` set %s where `%s`=?' % (tableName, ', '.join(map(lambda f: '`%s`=?' % (mappings.get(f).name or f), fields)), primaryKey)
+            # 如: update users set name=?, phone=? where id=?
             attrs['__delete__'] = 'delete from `%s` where `%s`=?' % (tableName, primaryKey)
+            # 如: delete from users where id=?
             return type.__new__(cls, name, bases, attrs)
+# 完成metaclass中完成上述的定义就可以在Model中定义各种数据库的操作方法, 也就是说通过对象来操作数据库所需要的基础由metaclass提供
+
+
 # 定义所有ORM映射的基类Model：
-# Model 可以理解为数据库表中的项映射成对象后该对象最基本的模型, 具有共有的特征和方法, 将被各种类型的项继承
+# Model类的任意子类可以映射一个数据库表  
+# Model类可以看作是对所有数据库表操作的基本定义的映射  
+# Model类可以理解为数据库表中的项映射成对象后该对象最基本的模型, 具有共有的特征和方法, 将被各种类型的项继承
 # Model从dict继承，拥有字典的所有功能，同时实现特殊方法__getattr__和__setattr__，能够实现属性操作  
 # 还定义各种操作数据库的方法，比如save，delete，find，findAll, update等等。
 # 实现数据库操作的所有方法，定义为class方法，所有继承自Model都具有数据库操作方法  
