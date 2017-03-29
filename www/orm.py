@@ -308,7 +308,7 @@ class Model(dict, metaclass=ModelMetaclass):
      
     @classmethod  
     async def findNumber(cls, selectField, where=None, args=None): # 根据WHERE条件查找，但返回的是整数，适用于像select count(*)这样带有内置函数的SQL
-        '''''find number by select and where.'''  
+        '''find number by select and where.'''  
         sql = ['select %s __num__ from `%s`' %(selectField, cls.__table__)]  
         if where:  
             sql.append('where')  
@@ -332,8 +332,16 @@ class Model(dict, metaclass=ModelMetaclass):
             logging.warn('failed to insert record: affected rows: %s' % rows)
 
     async def update(self): # 修改数据库中已经存入的一行数据  
-        args = list(map(self.getValue, self.__fields__))  #获得的value是User实例的属性值(项值), args是其组成的列表 
+        args = list(map(self.getValue, self.__fields__))   # 获得的value是User实例的属性值(项值), args是其组成的列表
+        #不可取: args = list(map(self.getValueOrDefault, self.__fields__)) 这种save中使用的简单方式会导致admin, created_at被其默认值覆盖. 如, created_at会被当前时间覆盖而不是实际创建用户的时间
         args.append(self.getValue(self.__primary_key__))  
+        # print('args=', args)
+        # => 
+        # args=[None, None, '99998', 'about:xxxxxx', 'sytu', 'imsytu@163.com', '001490793039689bb93e162417848c2823adf1909195208000']
+        # 发现没有在mysql内不能为null的admin, created_at, 如果不重构或者显式传入这两个参数到要修改的User对象将会报错
+        # 又不能直接使用getValueOrDefault方法, 因为update方法的目的是修改原来的值而不是拿默认值覆盖原来的值
+        # 可能的解决办法, 
+        # 目前暂时的解决方案是: 显式传入admin, created_at
         rows = await execute(self.__update__, args)  
         if rows != 1:  
             logging.warning('failed to update record: affected rows: %s'%rows)  
