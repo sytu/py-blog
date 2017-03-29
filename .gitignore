@@ -1,3 +1,6 @@
-.DS_Store
 *.sql
+
+__pycache__
+
 test.py
+.DS_Store
