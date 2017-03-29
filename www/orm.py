@@ -121,19 +121,19 @@ class StringField(Field):
     def __init__(self, name=None, primary_key=False, default=None, ddl='varchar(100)'): # ddl为项的数据类型, 此处初始化为100字节的可变字符
         super().__init__(name, ddl, primary_key, default) #  调用Field类中的__init__    StringField, self将会隐式地传递给super
 class IntegerField(Field):
-    def __init__(self, name):
-        super(IntegerField, self).__init__(name, 'bigint')
+    def __init__(self, name=None, primary_key=False, default=0):
+            super().__init__(name, 'bigint', primary_key, default) # bigint: -2^63 ~ 2^63-1
 # 布尔类型不可以作为主键  
 class BooleanField(Field):  
     def __init__(self, name=None, default=False):  
-        super().__init__(name,'Boolean',False, default)  
+        super().__init__(name, 'Boolean', False, default)  
 # 不知道这个column type是否可以自己定义 先自己定义看一下  
 class FloatField(Field):  
     def __init__(self, name=None, primary_key=False,default=0.0):  
         super().__init__(name, 'float', primary_key, default)  
 class TextField(Field):  
     def __init__(self, name=None, default=None):  
-        super().__init__(name,'text',False, default)
+        super().__init__(name, 'text', False, default) # text: 0~65535 Bytes
 
 
 
@@ -252,8 +252,8 @@ class Model(dict, metaclass=ModelMetaclass):
         if value is None: # 若属性没有对应的值
             field = self.__mappings__[key]
             if field.default is not None: # 若项有默认值, 则使用默认值
-                value = field.default() if callable(field.default) else field.default
-                logging.debug('using default value for %s: %s' % (key, str(value)))
+                value = field.default() if callable(field.default) else field.default # id的默认值就是个next_id是个可调用的函数, callable
+                logging.debug('using default value for %s: %s' % (key, str(value)))      # next_id详情看models.py
                 setattr(self, key, value)
         return value
 
