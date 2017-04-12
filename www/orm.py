@@ -36,8 +36,8 @@ async def create_pool(loop, **kw): # 连接池里是链接, 需要的时候来�
 async def destroy_pool():  
     global __pool  
     if __pool is not None :  
-        __pool.close()  #关闭进程池,The method is not a coroutine,就是说close()不是一个协程，所有不用yield from  
-        await __pool.wait_closed() #但是wait_close()是一个协程，所以要用yield from,到底哪些函数是协程，上面Pool的链接中都有 
+        __pool.close()  # 关闭进程池,The method is not a coroutine,就是说close()不是一个协程，所以不用yield from或await
+        await __pool.wait_closed() #但是wait_close()是一个协程，所以要用yield from,到底哪些函数是协程, Pool的api文档都有 
 
 # 封装SELECT
 async def select(sql, args, size=None):
