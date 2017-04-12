@@ -58,7 +58,7 @@ async def data_factory(app, handler):
         return (await handler(request))
     return parse_data
 
-# 以下这个middleware中间件(拦截器)把返回值转换为web.Response对象再返回，以保证满足aiohttp的要求
+# 以下这个middleware中间件(拦截器)把返回值转换为web.Response对象再返回，以保证满足aiohttp的要求, 如返回json数据作为api或是渲染后的html页面
 async def response_factory(app, handler):
     async def response(request):
         logging.info('Response handler...')
@@ -76,11 +76,14 @@ async def response_factory(app, handler):
             resp.content_type = 'text/html;charset=utf-8'
             return resp
         if isinstance(r, dict):
+            # 检查返回的字典是否有'__template__': 'blogs.html'这个键值对
             template = r.get('__template__')
+            # 如果没有, 则是REST风格的API, 只返回json格式的数据:
             if template is None:
                 resp = web.Response(body=json.dumps(r, ensure_ascii=False, default=lambda o: o.__dict__).encode('utf-8'))
                 resp.content_type = 'application/json;charset=utf-8'
                 return resp
+            # 非API, 则需要进行模板渲染, 并传入字典:
             else:
                 resp = web.Response(body=app['__templating__'].get_template(template).render(**r).encode('utf-8'))
                 resp.content_type = 'text/html;charset=utf-8'
